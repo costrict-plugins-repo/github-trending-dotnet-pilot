@@ -1,0 +1,234 @@
+#!/usr/bin/env node
+// DotnetPilot DI Registration Check — PostToolUse hook (Write/Edit)
+// When a .cs file is written that contains constructor injection,
+// checks whether corresponding DI registration exists.
+// Advisory only (exit 0 with additionalContext) — never blocks.
+
+const fs = require('fs');
+const path = require('path');
+const { hookEnabled } = require('./_lib/config');
+
+const HOOK_NAME = 'dnp-di-check';
+const EXPECTED_PROTOCOL_VERSION = 1;
+
+function emit(message) {
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PostToolUse",
+      additionalContext: `[${HOOK_NAME}] ${message}`
+    }
+  }));
+}
+
+let input = '';
+const stdinTimeout = setTimeout(() => process.exit(0), 10000);
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => input += chunk);
+process.stdin.on('end', () => {
+  clearTimeout(stdinTimeout);
+  try {
+    const data = JSON.parse(input);
+
+    // Protocol-shape sanity check — make drift visible
+    if (!data || typeof data !== 'object' || !('tool_input' in data)) {
+      emit(`[hook-version-mismatch] Expected tool_input in event payload (protocol v${EXPECTED_PROTOCOL_VERSION}). Hook author may need to update.`);
+      process.exit(0);
+    }
+
+    const cwd = data.cwd || process.cwd();
+
+    // Check if DI check is enabled (repo-local config first, then user-scoped)
+    if (!hookEnabled(cwd, 'di_check')) process.exit(0);
+
+    const toolInput = data.tool_input || {};
+    const filePath = toolInput.file_path || toolInput.path || '';
+
+    if (!filePath.endsWith('.cs')) process.exit(0);
+
+    // Skip test files, migrations, and Program.cs
+    const fileName = path.basename(filePath);
+    if (fileName === 'Program.cs' ||
+        filePath.includes('/Migrations/') || filePath.includes('\\Migrations\\') ||
+        filePath.includes('/Tests/') || filePath.includes('\\Tests\\') ||
+        filePath.includes('.Tests/') || filePath.includes('.Tests\\') ||
+        fileName.endsWith('Tests.cs') || fileName.endsWith('Test.cs')) {
+      process.exit(0);
+    }
+
+    // Read the file that was just written
+    let content;
+    try {
+      content = fs.readFileSync(filePath, 'utf8');
+    } catch (e) {
+      process.exit(0);
+    }
+
+    // Hardened class-name detection: handles
+    //   - class / record class / record struct / record
+    //   - modifiers: public, internal, partial, abstract, sealed, static
+    //   - generics: Foo<T>
+    //   - primary constructors (C# 12+): Foo(IBar bar)
+    //   - multi-line signatures with `where T : ...` constraints
+    const classPattern = /(?:^|\s)(?:partial\s+|abstract\s+|sealed\s+|static\s+|public\s+|internal\s+|private\s+|protected\s+)*(?:class|record(?:\s+class|\s+struct)?)\s+(\w+)(?:<[^>]*>)?(?:\s*\([^)]*\))?\s*(?::|where\s|{|;|\n|\r)/m;
+    const classMatch = content.match(classPattern);
+    if (!classMatch) process.exit(0);
+
+    const className = classMatch[1];
+    if (frameworkActivated(content, className)) process.exit(0);
+
+    // Look for constructor with injected parameters.
+    // Two shapes: (a) primary constructor `ClassName(... params ...)`
+    //             (b) classic constructor `public ClassName(... params ...)`
+    const ctorPattern = new RegExp(`(?:public\\s+|internal\\s+|private\\s+|protected\\s+)?${className}\\s*\\(([^)]*)\\)`);
+    const ctorMatch = content.match(ctorPattern);
+    if (!ctorMatch) process.exit(0);
+
+    // Extract injected type names (PascalCase types, strip generics and nullables)
+    const params = ctorMatch[1];
+    const paramPattern = /(?:^|,)\s*((?:[A-Z]\w*)(?:<[^>]+>)?)\s*\??\s+(\w+)/g;
+    const types = new Set();
+    for (const m of params.matchAll(paramPattern)) {
+      types.add(m[1].replace(/<.*>$/, ''));
+    }
+
+    if (types.size === 0) process.exit(0);
+
+    const registrationPatterns = [
+      `(?:TryAdd|Add)(?:Keyed)?(?:Scoped|Transient|Singleton)\\s*\\([^;]*typeof\\(\\s*${className}\\s*[<)]`,
+      `(?:TryAdd|Add)\\w*[^;(]*\\([^;]*\\bnew\\s+${className}\\s*[(<{]`,
+      `TryAddEnumerable[^;]*\\b${className}\\b`,
+    ];
+
+    // Quick scan: check Program.cs and extension files in the same solution
+    const searchDirs = [cwd];
+    let found = false;
+
+    for (const dir of searchDirs) {
+      try {
+        const programCs = findFilesByName(dir, n => n === 'Program.cs', 6);
+        const extensionFiles = findFilesByName(dir, n => n.includes('Extensions') && n.endsWith('.cs'), 6);
+        const filesToCheck = [...programCs, ...extensionFiles];
+
+        for (const f of filesToCheck) {
+          try {
+            // Strip comments first — a commented-out `AddScoped<FooService>`
+            // must NOT count as a real registration (it would false-suppress
+            // the advisory).
+            const c = stripComments(fs.readFileSync(f, 'utf8'));
+            if (genericRegistrationTargets(c).has(className)) {
+              found = true;
+              break;
+            }
+            for (const pattern of registrationPatterns) {
+              if (new RegExp(pattern).test(c)) {
+                found = true;
+                break;
+              }
+            }
+            if (found) break;
+          } catch (e) { /* skip unreadable */ }
+        }
+        if (found) break;
+      } catch (e) { /* skip */ }
+    }
+
+    if (!found) {
+      const interfaceName = `I${className}`;
+      emit(`DI ADVISORY: Class \`${className}\` has constructor injection but no DI registration was found. ` +
+        `Remember to register it (e.g., \`services.AddScoped<${interfaceName}, ${className}>()\`) ` +
+        `in Program.cs or a ServiceCollectionExtensions class. ` +
+        `(Detection is regex-based; for semantic accuracy use \`mcp__roslyn__check_di_completeness\` via dnp-di-wiring-checker.)`);
+    }
+
+    process.exit(0);
+  } catch (e) {
+    process.exit(0);
+  }
+});
+
+// Controllers, hubs, hosted services, Razor pages, view components, endpoints
+// and conventional middleware are constructed by the framework from the
+// container; they are never registered as services themselves.
+const FRAMEWORK_BASES = new Set(['Controller', 'ControllerBase', 'Hub', 'BackgroundService', 'IHostedService',
+  'PageModel', 'ViewComponent', 'Endpoint', 'EndpointWithoutRequest']);
+const FRAMEWORK_SUFFIX = /(?:Controller|Middleware|Hub|Endpoint)$/;
+
+function frameworkActivated(src, className) {
+  if (FRAMEWORK_SUFFIX.test(className)) return true;
+  const header = src.match(new RegExp(`\\b(?:class|record(?:\\s+class|\\s+struct)?)\\s+${className}\\b([^{;]*)`));
+  if (!header) return false;
+  const colon = header[1].replace(/\([^)]*\)/g, '').indexOf(':');
+  if (colon === -1) return false;
+  const bases = header[1].replace(/\([^)]*\)/g, '').slice(colon + 1).split(/\bwhere\b/)[0];
+  return splitTopLevel(bases).some(b => FRAMEWORK_BASES.has(simpleTypeName(b)));
+}
+
+// Implementation type of every `AddScoped<...>`-style generic registration:
+// the last top-level type argument, so `AddScoped<IRepo<User>, UserRepo>`
+// yields `UserRepo` and `AddScoped<IFooService, FooService>` never yields `Service`.
+const GENERIC_REGISTRATION = /\b(?:TryAdd|Add)(?:Keyed)?(?:Scoped|Transient|Singleton|HttpClient|HostedService|DbContext|DbContextFactory|DbContextPool|PooledDbContextFactory)\s*</g;
+
+function genericRegistrationTargets(src) {
+  const targets = new Set();
+  for (const m of src.matchAll(GENERIC_REGISTRATION)) {
+    let depth = 1;
+    let i = m.index + m[0].length;
+    const start = i;
+    for (; i < src.length && depth > 0; i++) {
+      if (src[i] === '<') depth++;
+      else if (src[i] === '>') depth--;
+      else if (src[i] === ';' || src[i] === '(') break;
+    }
+    if (depth !== 0) continue;
+    const args = splitTopLevel(src.slice(start, i - 1));
+    if (args.length) targets.add(simpleTypeName(args[args.length - 1]));
+  }
+  return targets;
+}
+
+function splitTopLevel(text) {
+  const parts = [];
+  let depth = 0;
+  let cur = '';
+  for (const ch of text) {
+    if (ch === '<') depth++;
+    else if (ch === '>') depth--;
+    if (ch === ',' && depth === 0) {
+      parts.push(cur);
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur.trim()) parts.push(cur);
+  return parts.map(p => p.trim()).filter(Boolean);
+}
+
+// `global::My.Ns.Foo<T>?` -> `Foo`
+function simpleTypeName(type) {
+  return type.replace(/<[\s\S]*$/, '').replace(/[?\s]/g, '').split(/[.:]/).pop();
+}
+
+// Remove `//` line comments and `/* */` block comments so commented-out code
+// doesn't register as a real DI call. Not a full C# lexer (won't honor `//`
+// inside string literals), but registration calls don't live in strings, so
+// the simple pass is safe for this check.
+function stripComments(src) {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/\/\/[^\n\r]*/g, ' ');
+}
+
+function findFilesByName(dir, matcher, maxDepth, depth = 0) {
+  const results = [];
+  if (depth > maxDepth) return results;
+  try {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name.startsWith('.') || ['node_modules', 'bin', 'obj'].includes(entry.name)) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isFile() && matcher(entry.name)) results.push(full);
+      else if (entry.isDirectory()) results.push(...findFilesByName(full, matcher, maxDepth, depth + 1));
+    }
+  } catch {}
+  return results;
+}
