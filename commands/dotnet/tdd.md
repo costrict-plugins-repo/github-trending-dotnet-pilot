@@ -1,0 +1,60 @@
+---
+description: "Implement a feature using TDD — writes failing tests first, then production code. --existing adds tests to code that already exists."
+argument-hint: "<task-description> [--complexity easy|hard] [--existing <class|file|project>]"
+effort: medium
+---
+
+# TDD
+
+`/dotnet-pilot:dotnet:tdd` implements a feature using strict RED-GREEN-REFACTOR discipline.
+
+> **Delegates to**: `dnp-tdd-developer-easy` (sonnet, effort low) or `dnp-tdd-developer-hard` (opus, effort medium) based on complexity; `dnp-architect` (opus, effort high) for an architectural `[HALT` question.
+
+## Complexity routing
+
+| Complexity | Agent | When to use |
+|------------|-------|-------------|
+| **easy** | `dnp-tdd-developer-easy` | Clear requirements, ≤2 files, follows existing patterns |
+| **hard** | `dnp-tdd-developer-hard` | Ambiguous requirements, architectural decisions, cross-layer changes, >2 files |
+
+If `--complexity` is omitted, auto-detect:
+- Count files likely to change (entities, services, controllers, configs)
+- Check if new interfaces or cross-project references are needed
+- Check if EF Core migrations are involved
+- ≤2 files and no architectural decisions → **easy**; otherwise → **hard**
+
+## `--existing <target>`
+
+Adds tests to production code that already exists — a class, a file, or a whole project — and
+leaves production files untouched. The agent is briefed with the target, the detected test
+conventions, and the constraint that production code is read-only. It writes characterization
+tests for the current behavior (unit tests for services and domain types, `WebApplicationFactory`
+tests for endpoints), runs them, and reports gaps it could not cover without a production change
+instead of making that change. Complexity routes as usual.
+
+## Execution
+
+1. Parse the task description and flags. With no task description (or no `--existing` target),
+   stop and ask for one before spawning anything.
+2. Auto-detect complexity if not specified (see routing table above).
+3. Detect solution conventions: test framework, mocking library, assertion style, architecture pattern.
+4. Spawn the selected TDD agent with:
+   - Task description (or the `--existing` target and the read-only constraint)
+   - Solution structure (from `mcp__roslyn__get_solution_structure` or solution map)
+   - Test project path and conventions
+   - Architecture style (clean, vertical-slice, etc.)
+5. On a `[ROUTING: dotnet-pilot:dnp-tdd-developer-hard]` return from the easy agent — it hands
+   the task back without implementing — spawn `dnp-tdd-developer-hard` with the original brief
+   plus the reasons it gave. On a `[PARTIAL: …]` return, report what was done and what is left
+   to the user rather than re-spawning.
+6. On a `[HALT: <question>]` return, put the question to the user with `AskUserQuestion` — the
+   agent has no prompt tool of its own — then re-spawn the same agent with the original brief plus
+   the answer. Repeat until it returns a result or the user aborts.
+   When the question is architectural — which layer or project a type belongs in, a cross-layer
+   contract, a pattern the solution does not use yet — first spawn `dnp-architect` with the HALT
+   block verbatim and the solution structure, and ask for the option the layer rules favor plus
+   the one fact that decides it. Put that option first, marked recommended, with its one-line
+   rationale; the user still chooses. Business-rule ambiguity, naming, test scope and blocked
+   steps go to the user directly.
+7. Agent handles DI registration, project references, and build verification as part of the cycle.
+8. Report: tests created, production files created/modified, build status, DI status.

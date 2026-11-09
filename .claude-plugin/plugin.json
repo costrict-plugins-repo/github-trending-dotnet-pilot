@@ -1,0 +1,71 @@
+{
+  "name": "dotnet-pilot",
+  "displayName": "DotnetPilot",
+  "version": "3.9.2",
+  "description": ".NET development plugin for Claude Code — Roslyn semantic analysis, DI/architecture/EF Core guards, convention-aware scaffolding, TDD agents, security and performance review, and project lifecycle commands.",
+  "author": {
+    "name": "Nick Zdanovych",
+    "email": "zdanovichnick@gmail.com"
+  },
+  "homepage": "https://github.com/zdanovichnick/dotnet-pilot",
+  "repository": "https://github.com/zdanovichnick/dotnet-pilot",
+  "license": "MIT",
+  "keywords": [
+    "dotnet",
+    "csharp",
+    "agents",
+    "quality-gates",
+    "ef-core",
+    "aspnet",
+    "clean-architecture",
+    "roslyn",
+    "mcp-roslyn"
+  ],
+  "mcpServers": "./.mcp.json",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "build_status": {
+      "type": "boolean",
+      "title": "Build failure toasts",
+      "description": "Show a toast after 3 and 5 consecutive dotnet build/test failures (requires a Claude Code build with mods).",
+      "default": true
+    },
+    "routing": {
+      "type": "boolean",
+      "title": "Routing roster in system prompt",
+      "description": "Add the dotnet-pilot routing guidance to the system prompt once per session in .NET projects (requires a Claude Code build with mods).",
+      "default": true
+    },
+    "pressure": {
+      "type": "boolean",
+      "title": "Pressure meter",
+      "description": "Score repeated red dotnet runs, re-edits and corrections 0–100 in the status line, warn on test edits that loosen a test after a red run, and add a short system-prompt section while the score is high (requires a Claude Code build with mods).",
+      "default": true
+    },
+    "pressure_test_guard_block": {
+      "type": "boolean",
+      "title": "Block loosening test edits under high pressure",
+      "description": "Deny an Edit that skips, removes or comments out a test assertion while the pressure score is 60 or higher. Off by default; the warning toast shows regardless.",
+      "default": false
+    },
+    "pixel_city": {
+      "type": "boolean",
+      "title": "Pixel city band",
+      "description": "Draw an animated pixel-art band above the prompt in the terminal: a city, beach, running dinosaur or time-lapse sunset under a day/night sky that reacts to tool activity, with a storm on a failed dotnet build/test and a rainbow when it goes green. /city controls it (requires a Claude Code build with mods).",
+      "default": false
+    },
+    "pixel_city_scene": {
+      "type": "string",
+      "title": "Pixel band scene",
+      "description": "The scene the pixel band starts with: city, beach, dino (a running T-rex that jumps the cacti; meteors instead of rain in a storm) or sunset (a time-lapse sunrise-to-sunset over mountains and a lake). /city <scene> switches it for the session.",
+      "options": ["city", "beach", "dino", "sunset"],
+      "default": "city"
+    },
+    "mcp_health": {
+      "type": "boolean",
+      "title": "Roslyn MCP health check",
+      "description": "At session start in a .NET project, connect and probe the roslyn MCP server and diagnose a failed start with dnp-roslyn version/doctor and show the fix in the status line and a toast. When healthy it only shows roslyn ✓ in the status line; /dnp-mcp shows the state and /dnp-mcp retry re-checks. Requires a Claude Code build with mods.",
+      "default": true
+    }
+  }
+}
