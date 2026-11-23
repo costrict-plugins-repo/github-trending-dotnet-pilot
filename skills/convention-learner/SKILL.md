@@ -1,0 +1,146 @@
+---
+name: convention-learner
+description: Protocol for detecting and replicating existing project conventions before generating new code — naming, folder structure, DI registration, test framework, DTOs, and error handling.
+when_to_use: Before generating any code in an existing solution, to mirror its naming, folders, DI style, test framework, DTO shape, and error handling.
+---
+
+# Convention Learner
+
+**Purpose**: prevent naming drift. Generated code that doesn't match the project's conventions
+creates review friction and merge noise long after it ships.
+
+Run this the first time you create a file in a codebase you haven't touched this session, and
+whenever the request leaves naming or structure open. Skip it when the request specifies the
+conventions, or when you already established them earlier in this conversation.
+
+## Detection
+
+Six questions. Answer the ones your change actually depends on — a new validator needs the
+naming and folder answers, not the EF configuration one.
+
+### Step 1 — Naming Suffix Convention
+
+What suffix does this project use for its handlers/services?
+
+```
+Grep pattern: "class \w+(Handler|Service|Manager|Controller|UseCase|Interactor)"
+Files: src/**/*.cs
+```
+
+Determine: `Handler`, `Service`, `Manager`, `Controller`, or a mix?
+
+If mixed: use the suffix most common in the feature area you're working in (e.g., if `Orders/` uses `Handler`, use `Handler` for new order code even if `Customers/` uses `Service`).
+
+### Step 2 — Folder / Architecture Style
+
+What is the top-level organization under `src/`?
+
+```
+Glob: src/**/*.cs  → inspect top-level directory names under src/<AppName>/
+```
+
+| Pattern found | Architecture style |
+|--------------|-------------------|
+| `Features/<Feature>/<Action>/` | Vertical Slice (VSA) |
+| `Controllers/` + `Services/` + `Models/` | Layered / MVC |
+| `Domain/` + `Application/` + `Infrastructure/` | Clean Architecture |
+| `Domain/` + aggregates with `AggregateRoot` | DDD |
+
+### Step 3 — DI Registration Pattern
+
+How are services registered?
+
+```
+Grep pattern: "AddScoped|AddTransient|AddSingleton"
+Files: src/**/*.cs
+```
+
+| Pattern found | Convention |
+|--------------|-----------|
+| `services.Add*(...)` in `Program.cs` only | Inline registration |
+| `services.AddOrders()` in extension methods | Extension method per module/feature |
+| `services.AddApplication()` + `services.AddInfrastructure()` | Layer-scoped extension methods |
+
+### Step 4 — Test Organization
+
+What test framework and assertion library does this project use?
+
+```
+Glob: tests/**/*Tests.cs  → read 2 representative test files
+Grep pattern: "using Xunit|using NUnit|using Microsoft.VisualStudio.TestTools"
+Grep pattern: "NSubstitute|Moq|FakeItEasy"
+Grep pattern: "FluentAssertions|Shouldly"
+```
+
+Determine: `xUnit` / `NUnit` / `MSTest`? `NSubstitute` / `Moq` / `FakeItEasy`? `FluentAssertions` / `Shouldly` / raw asserts?
+
+Also check: are test classes named `<Subject>Tests` or `<Subject>Test` (no plural)?
+
+### Step 5 — DTO Style
+
+How are request/response types defined?
+
+```
+Grep pattern: "public record|public class.*Request|public class.*Response|public class.*Dto"
+Files: src/**/*.cs
+```
+
+| Pattern found | Convention |
+|--------------|-----------|
+| `public record CreateOrderRequest(...)` | Positional record |
+| `public record CreateOrderRequest { ... }` | Property-init record |
+| `public class CreateOrderRequest { public ... get; set; }` | Mutable class |
+
+Suffix used: `Request`/`Response`, `Dto`, `Model`, or `ViewModel`?
+
+### Step 6 — Error Handling Style
+
+How does this project signal failures?
+
+```
+Grep pattern: "Result<|OneOf<|throw new \w+Exception|ProblemDetails|IActionResult.*Problem"
+Files: src/**/*.cs
+```
+
+| Pattern found | Convention |
+|--------------|-----------|
+| `Result<TValue, TError>` / `OneOf<>` | Result/discriminated union pattern |
+| `throw new DomainException` / `throw new ValidationException` | Exception-based |
+| `TypedResults.Problem(...)` / `ValidationProblem(...)` | ProblemDetails (RFC 9457) |
+
+## Applying Conventions
+
+After completing all 6 steps, state the detected conventions explicitly before generating any code:
+
+> **Detected conventions**: naming=`Handler`, folders=`VSA (Features/<Feature>/<Action>/)`, DI=`extension methods per feature`, tests=`xUnit + NSubstitute + FluentAssertions`, DTOs=`positional records with Request/Response suffix`, errors=`Result pattern`
+
+Then generate code matching **all** detected conventions. If a convention is ambiguous (genuinely mixed), use the most common pattern in the nearest code area and note the ambiguity:
+
+> **Note**: DI registration is mixed — 3 extension methods, 2 inline. Using extension method pattern (majority).
+
+## Convention Override
+
+If the user specifies a convention explicitly in their request, it takes precedence over detected conventions. Acknowledge it:
+
+> **User-specified override**: using `Controller` suffix per request (detected: `Handler`).
+
+## Quick Reference — Convention Extraction Commands
+
+All Roslyn-aware tools are preferred over Grep for `.cs` files when available.
+
+| What to find | Tool / Pattern |
+|-------------|---------------|
+| Solution structure | `mcp__roslyn__get_solution_structure` |
+| Class naming suffixes | `Grep "class \w+(Handler|Service|Manager)" src/` |
+| Folder layout | `Glob "src/**/*.cs"` + inspect directories |
+| DI registrations | `Grep "AddScoped\|AddTransient\|AddSingleton" src/` |
+| Test files sample | `Glob "tests/**/*Tests.cs"` → `Read` 2 files |
+| DTO types | `Grep "public record\|class.*Request\|class.*Response" src/` |
+| Error handling | `Grep "Result<\|throw new\|ProblemDetails" src/` |
+
+## Common Pitfalls
+
+- **Don't assume VSA because there's a `Features/` folder** — check if handlers are inside feature subfolders or at the root of `Features/`.
+- **Don't assume NSubstitute** — Moq is still common; mixing substitute APIs breaks build.
+- **Don't infer from one file** — read at least 2–3 representative files per convention.
+- **`Dto` suffix ≠ `Request`/`Response` suffix** — they signal different intent; don't mix them in the same codebase.

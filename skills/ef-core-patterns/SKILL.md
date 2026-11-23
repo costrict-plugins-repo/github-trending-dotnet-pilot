@@ -1,0 +1,79 @@
+---
+name: ef-core-patterns
+description: EF Core best practices reference — safe migrations, query optimization, configuration patterns, and common pitfalls.
+when_to_use: Writing or reviewing EF Core queries, entity configurations, or migrations; before running dotnet ef migrations add.
+---
+
+# EF Core Patterns
+
+Reference material for EF Core development.
+
+## Migration Safety
+
+### Safe Operations
+- Adding a new table
+- Adding a nullable column
+- Adding a column with a default value
+- Adding an index
+- Renaming (with `migrationBuilder.RenameColumn` — preserves data)
+
+### Dangerous Operations (require confirmation)
+- Dropping a column (data loss)
+- Changing column type (potential data truncation)
+- Adding NOT NULL column without default (fails on existing rows)
+- Dropping a table (data loss)
+- Removing an index (performance impact)
+
+### Migration Best Practices
+- One migration per logical change
+- Generate with `dotnet ef migrations add`, then review and adjust the generated `Up`/`Down`
+  (a rename scaffolded as drop + add must become `RenameColumn`; data moves go in `Sql()`).
+  Never hand-write a migration from scratch — the model snapshot would drift
+- `dotnet ef database update` has no dry-run: review the SQL with
+  `dotnet ef migrations script <from> <to>` (`--idempotent` for scripts run against unknown state)
+- `dotnet ef migrations has-pending-model-changes` (EF Core 8+) fails when the model has changed
+  since the last migration — use it as a CI gate
+- Keep migrations small and reversible
+- Use `migrationBuilder.Sql()` for data migrations, not EF operations
+
+## Configuration Patterns
+
+### Fluent API (preferred)
+```csharp
+public class UserConfiguration : IEntityTypeConfiguration<User>
+{
+    public void Configure(EntityTypeBuilder<User> builder)
+    {
+        builder.HasKey(u => u.Id);
+        builder.Property(u => u.Email).HasMaxLength(256).IsRequired();
+        builder.HasIndex(u => u.Email).IsUnique();
+        builder.HasMany(u => u.Orders).WithOne(o => o.User).HasForeignKey(o => o.UserId);
+    }
+}
+```
+
+### DbContext Registration
+```csharp
+// In OnModelCreating:
+modelBuilder.ApplyConfigurationsFromAssembly(typeof(ApplicationDbContext).Assembly);
+```
+
+## Query Optimization
+
+### Do
+- Use `AsNoTracking()` for read-only queries
+- Use projections (`Select`) to fetch only needed columns
+- Use `Include` with `ThenInclude` for eager loading (avoid N+1)
+- Use split queries for many includes: `.AsSplitQuery()`
+- Use `ExecuteUpdateAsync` / `ExecuteDeleteAsync` for bulk operations (EF 7+)
+
+### Don't
+- Don't call `ToList()` before filtering (materializes entire table)
+- Don't use `Count()` when you need `Any()`
+- Don't load navigation properties you don't need
+- Don't use `FromSqlRaw` with string interpolation (SQL injection risk)
+- Don't forget `CancellationToken` on async queries
+
+## See Also
+- `skills/ddd/SKILL.md` — value converters and complex properties for DDD entities
+- `skills/testing-dotnet/SKILL.md` — testing queries against the real provider
